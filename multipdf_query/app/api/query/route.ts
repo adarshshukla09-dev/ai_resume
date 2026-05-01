@@ -1,83 +1,85 @@
+"use server";
 import { embeddings } from "@/lib/embeddings";
-import { NextRequest, NextResponse } from "next/server";
-import { qdrant, COLLECTION_NAME } from "@/lib/qdrant";
-import { ChatOpenAI } from "@langchain/openai";
+import { COLLECTION_NAME, qdrant } from "@/lib/qdrant";
+import { NextResponse } from "next/server";
 
+export async function POST(req: Request) {
+  try {
+    const { query } = await req.json();
 
+    if (!query || query.trim().length === 0) {
+      return NextResponse.json({ error: "Empty query" }, { status: 400 });
+    }
+    console.log(query);
+    // ✅ Step 1: Embed query
+    const queryVector = await embeddings.embedDocuments(query);
+    console.log(queryVector);
+    // ✅ Step 2: Search Qdrant directly (faster than LangChain wrapper)
+    const searchResults = await qdrant.search(COLLECTION_NAME, {
+      vector: queryVector,
+      limit: 5,
+    });
+    console.log(searchResults);
 
-export async function POST(req:NextRequest) {
-    try {
-       const  {query} =await req.json();
-       const queryvector = await embeddings.embedQuery(query)
-       
-       const result = await qdrant.search(COLLECTION_NAME,{
-        vector:queryvector,
-        limit:3
-       })
+    if (!searchResults || searchResults.length === 0) {
+      return NextResponse.json({
+        answer: "I don't know based on the provided documents.",
+      });
+    }
 
-       const context =result.map(r => r.payload?.text)
-      .join("\n");
+    // ✅ Step 3: Build strong context
+    const context = searchResults
+      .map((r: any, i: number) => {
+        return `Source ${i + 1} (${r.payload.fileName}):\n${r.payload.text}`;
+      })
+      .join("\n\n---\n\n");
 
-const model = new ChatOpenAI({
-  model: "anthropic/claude-3.5-sonnet",
-  temperature: 0,
-  configuration: {
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.OPENROUTER_API_KEY
-  }
-});
+    // ✅ Step 4: Strong prompt (reduces hallucination)
+    const systemPrompt = `
+You are a strict document-based assistant.
 
-
-    const prompt = `
-Answer the question using ONLY the context below.
-
-Context:
-${context}
-
-Question:
-${query}
+Rules:
+- Answer ONLY using the provided context.
+- If the answer is not present, say: "I don't know".
+- Always mention the source file name.
+- Be concise and accurate.
 `;
 
-const systemPrompt=`you are a helpful ai assissant amd you must only answer on basis of context `
-const apiKey = process.env.OPENROUTER_KEY!;
- const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    // ✅ Step 5: Call OpenRouter
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000", // Optional for OpenRouter rankings
-        "X-Title": "AI Interview Prep",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "Multi-PDF RAG",
       },
       body: JSON.stringify({
-        model: "nvidia/nemotron-3-nano-30b-a3b:free",
+        model: "openai/gpt-4o-mini", // 🔥 MUCH better than gemma
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: prompt },
+          {
+            role: "user",
+            content: `Context:\n${context}\n\nQuestion: ${query}`,
+          },
         ],
-        // Note: Check model support for json_object if using fetch
-        response_format: { type: "json_object" },
+        temperature: 0.3, // lower = more factual
       }),
     });
-   if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`OpenRouter API error: ${response.status} - ${JSON.stringify(errorData)}`);
-    }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content;
 
-    if (!content) {
-      throw new Error("Empty response from OpenRouter");
-    }
+    const answer =
+      data.choices?.[0]?.message?.content ||
+      "No answer generated.";
 
-    const parsedResponse = JSON.parse(content);
- return NextResponse.json({
-      answer: parsedResponse,
-      context
-    });
+    return NextResponse.json({ answer });
 
   } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "Query failed" }, { status: 500 });
+    console.error("Query Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }

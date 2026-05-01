@@ -1,7 +1,7 @@
-
-
 services:
-qudrant:
-  image: qudrant/qudrant:latest
-  ports:
-    - "6333:6333"
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage

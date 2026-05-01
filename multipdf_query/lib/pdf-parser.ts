@@ -1,17 +1,18 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { PDFParse } from 'pdf-parse';
+// lib/pdf-loader.ts
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 
+export async function loadPdf(buffer: Buffer) {
+  // Write buffer to temp file (required by loader)
+  const fs = await import("fs/promises");
+  const path = `/tmp/${Date.now()}.pdf`;
 
-export async function extractPdfText(file: Buffer) {
-  const parser = new PDFParse({data:file});
-  try { 
-const result = await parser.getText();
-  await parser.destroy();
+  await fs.writeFile(path, buffer);
 
-    return result.text; 
-  } catch (error) {
-    console.error("PDF Extraction failed:", error);
- await parser.destroy();
-    throw error;
-  }
+  const loader = new PDFLoader(path);
+  const docs = await loader.load();
+
+  // Cleanup temp file
+  await fs.unlink(path);
+
+  return docs;
 }
